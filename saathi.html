@@ -628,6 +628,7 @@ function generateNotificationsList() {
             <div class="notification-actions">
                 ${notification.status === 'pending' ?
                     `<button class="btn btn-primary respond-btn" data-id="${notification.id}">Respond</button>
+                     <button class="btn btn-success call-btn" data-id="${notification.id}" style="margin-left: 0.5rem;">📞 Call Patient</button>
                      <button class="btn btn-primary track-btn" data-id="${notification.id}" style="margin-left: 0.5rem;">📍 Track Location</button>
                      <button class="btn dismiss-btn" data-id="${notification.id}" style="margin-left: 0.5rem;">Dismiss</button>` :
                     '<span class="status-resolved">Resolved</span>'
@@ -638,6 +639,9 @@ function generateNotificationsList() {
 
     container.querySelectorAll('.respond-btn').forEach(btn => {
         btn.addEventListener('click', (e) => respondToNotification(e.target.dataset.id));
+    });
+    container.querySelectorAll('.call-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => callPatient(e.target.dataset.id));
     });
     container.querySelectorAll('.track-btn').forEach(btn => {
         btn.addEventListener('click', (e) => trackPatientLocation(e.target.dataset.id));
@@ -704,6 +708,28 @@ async function trackPatientLocation(notificationId) {
     // Open Google Maps with the patient's location
     const mapsUrl = `https://www.google.com/maps?q=${lat},${lng}&ll=${lat},${lng}&z=16`;
     window.open(mapsUrl, '_blank');
+}
+
+async function callPatient(notificationId) {
+    const notification = appData.notifications.find(n => n.id == notificationId);
+    if (!notification || !notification.patient_details || !notification.patient_details.phone_number) {
+        alert('Patient phone number not available');
+        return;
+    }
+
+    const phoneNumber = notification.patient_details.phone_number;
+
+    // Detect if user is on mobile or desktop
+    const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+
+    if (isMobile) {
+        // On mobile devices, use tel: protocol to open default dialer
+        window.location.href = `tel:${phoneNumber}`;
+    } else {
+        // On desktop/laptop, open WhatsApp Web with the phone number
+        const whatsappUrl = `https://wa.me/91${phoneNumber}`;
+        window.open(whatsappUrl, '_blank');
+    }
 }
 
 function urlB64ToUint8Array(base64String) {
