@@ -2975,7 +2975,14 @@ def get_sos_events():
                         filtered_events.append(enhanced_event)
                     else:
                         # If patient not found in DB, still include the event
-                        filtered_events.append(event)
+                        enhanced_event = event.copy()
+                        enhanced_event['patient_details'] = {
+                            'full_address': 'Address not available',
+                            'phone_number': 'Phone not available',
+                            'email': 'Email not available'
+                        }
+                        enhanced_event['distance_km'] = round(distance, 2)
+                        filtered_events.append(enhanced_event)
 
     # Sort by timestamp (most recent first)
     filtered_events.sort(key=lambda x: x['timestamp'], reverse=True)
