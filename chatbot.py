@@ -2936,7 +2936,7 @@ def get_sos_events():
         all_sorted = sorted(pending_events, key=lambda x: x['timestamp'], reverse=True) + sorted(other_events, key=lambda x: x['timestamp'], reverse=True)
         return jsonify({"success": True, "sos_events": all_sorted})
 
-    # Filter events within 2km radius
+    # Filter events within 2km radius and add patient details
     filtered_events = []
     for event in sos_events.values():
         if event['status'] == 'pending':
@@ -2948,7 +2948,21 @@ def get_sos_events():
                 # Calculate distance using Haversine formula
                 distance = calculate_distance(saathi_lat, saathi_lng, patient_lat, patient_lng)
                 if distance <= 2.0:  # 2km radius
-                    filtered_events.append(event)
+                    # Get patient details from database
+                    patient = User.query.filter_by(patient_id=event['patient_id']).first()
+                    if patient:
+                        # Add patient details to the event
+                        enhanced_event = event.copy()
+                        enhanced_event['patient_details'] = {
+                            'full_address': patient.get_full_address(),
+                            'phone_number': patient.phone_number,
+                            'email': patient.email
+                        }
+                        enhanced_event['distance_km'] = round(distance, 2)
+                        filtered_events.append(enhanced_event)
+                    else:
+                        # If patient not found in DB, still include the event
+                        filtered_events.append(event)
 
     # Sort by timestamp (most recent first)
     filtered_events.sort(key=lambda x: x['timestamp'], reverse=True)
