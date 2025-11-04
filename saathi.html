@@ -712,7 +712,7 @@ async function trackPatientLocation(notificationId) {
 
 async function callPatient(notificationId) {
     const notification = appData.notifications.find(n => n.id == notificationId);
-    if (!notification || !notification.patient_details || !notification.patient_details.phone_number) {
+    if (!notification || !notification.patient_details || !notification.patient_details.phone_number || notification.patient_details.phone_number === 'Phone not available') {
         alert('Patient phone number not available');
         return;
     }
