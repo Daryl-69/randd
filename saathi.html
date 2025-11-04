@@ -617,11 +617,19 @@ function generateNotificationsList() {
             <div class="notification-content">
                 <p>${notification.message}</p>
                 ${notification.location ? `<p><small>📍 Location: ${notification.location.latitude.toFixed(4)}, ${notification.location.longitude.toFixed(4)}</small></p>` : ''}
+                ${notification.patient_details ? `
+                    <div class="patient-details" style="margin-top: 1rem; padding: 0.5rem; background-color: var(--color-secondary); border-radius: 8px;">
+                        <p><strong>📞 Phone:</strong> <a href="tel:${notification.patient_details.phone_number}" style="color: var(--primary-color);">${notification.patient_details.phone_number || 'Not available'}</a></p>
+                        <p><strong>🏠 Address:</strong> ${notification.patient_details.full_address || 'Not available'}</p>
+                        <p><strong>📏 Distance:</strong> ${notification.distance_km ? notification.distance_km + ' km away' : 'Unknown'}</p>
+                    </div>
+                ` : ''}
             </div>
             <div class="notification-actions">
                 ${notification.status === 'pending' ?
                     `<button class="btn btn-primary respond-btn" data-id="${notification.id}">Respond</button>
-                     <button class="btn dismiss-btn" data-id="${notification.id}">Dismiss</button>` :
+                     <button class="btn btn-primary track-btn" data-id="${notification.id}" style="margin-left: 0.5rem;">📍 Track Location</button>
+                     <button class="btn dismiss-btn" data-id="${notification.id}" style="margin-left: 0.5rem;">Dismiss</button>` :
                     '<span class="status-resolved">Resolved</span>'
                 }
             </div>
@@ -630,6 +638,9 @@ function generateNotificationsList() {
 
     container.querySelectorAll('.respond-btn').forEach(btn => {
         btn.addEventListener('click', (e) => respondToNotification(e.target.dataset.id));
+    });
+    container.querySelectorAll('.track-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => trackPatientLocation(e.target.dataset.id));
     });
     container.querySelectorAll('.dismiss-btn').forEach(btn => {
         btn.addEventListener('click', (e) => dismissNotification(e.target.dataset.id));
@@ -678,6 +689,21 @@ async function dismissNotification(notificationId) {
     }
     updateEmergencyCount();
     generateNotificationsList();
+}
+
+async function trackPatientLocation(notificationId) {
+    const notification = appData.notifications.find(n => n.id == notificationId);
+    if (!notification || !notification.location) {
+        alert('Patient location not available');
+        return;
+    }
+
+    const lat = notification.location.latitude;
+    const lng = notification.location.longitude;
+
+    // Open Google Maps with the patient's location
+    const mapsUrl = `https://www.google.com/maps?q=${lat},${lng}&ll=${lat},${lng}&z=16`;
+    window.open(mapsUrl, '_blank');
 }
 
 function urlB64ToUint8Array(base64String) {
