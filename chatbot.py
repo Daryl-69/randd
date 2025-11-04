@@ -751,6 +751,19 @@ def register():
         if not full_name: errors.append("Full name is required")
         if not email or "@" not in email: errors.append("Valid email is required")
         if not password or len(password) < 8: errors.append("Password must be at least 8 characters")
+
+        # Validate phone number (must be exactly 10 digits)
+        if phone_number:
+            # Remove any non-digit characters for validation
+            clean_phone = ''.join(filter(str.isdigit, phone_number))
+            if len(clean_phone) != 10:
+                errors.append("Phone number must be exactly 10 digits")
+            else:
+                # Store the cleaned phone number
+                phone_number = clean_phone
+        else:
+            errors.append("Phone number is required")
+
         if errors:
             return jsonify({"success": False, "message": "Fix the errors below.", "errors": errors}), 400
 
