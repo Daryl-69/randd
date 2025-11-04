@@ -348,7 +348,7 @@
 </div>
 
     <script>
-        const API_BASE_URL = '/api';
+        const API_BASE_URL = '';
         document.addEventListener('DOMContentLoaded', function() {
             let saathi = null;
             let currentLanguage = 'en';
@@ -531,7 +531,7 @@
             async function loadNotifications() {
     try {
         // NOTE: This endpoint does not exist in your backend yet.
-        const response = await fetch(`${API_BASE_URL}/v1/sos-events`, { 
+        const response = await fetch(`${API_BASE_URL}/v1/sos-events`, {
             method: 'GET',
             headers: { 'Content-Type': 'application/json' }
         });
@@ -560,6 +560,40 @@
         container.innerHTML = '<p style="text-align: center; color: var(--sos-color);">Could not load emergency alerts. Please check your connection and try again.</p>';
     }
 }
+            }
+
+            // Function to update saathi location
+            async function updateSaathiLocation() {
+                if (navigator.geolocation) {
+                    navigator.geolocation.getCurrentPosition(async (position) => {
+                        const latitude = position.coords.latitude;
+                        const longitude = position.coords.longitude;
+
+                        try {
+                            // Send location to backend
+                            const response = await fetch(`${API_BASE_URL}/v1/saathi/update-location`, {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({
+                                    latitude: latitude,
+                                    longitude: longitude
+                                })
+                            });
+
+                            if (response.ok) {
+                                console.log('Saathi location updated successfully');
+                            } else {
+                                console.error('Failed to update saathi location');
+                            }
+                        } catch (error) {
+                            console.error('Error updating saathi location:', error);
+                        }
+                    }, (error) => {
+                        console.error('Geolocation error:', error);
+                    });
+                } else {
+                    console.error('Geolocation is not supported by this browser');
+                }
             }
 
 function updateEmergencyCount() {
@@ -722,7 +756,14 @@ async function initializeApp() {
                 console.log('Service Worker registered successfully');
                 setupNotificationBanner();
                 // We call subscribeUser here to ensure it runs after registration
-                subscribeUser(); 
+                subscribeUser();
+
+                // Update saathi location on app initialization
+                updateSaathiLocation();
+
+                // Update location every 5 minutes
+                setInterval(updateSaathiLocation, 5 * 60 * 1000);
+
             } catch (error) {
                 console.error('Service Worker registration failed:', error);
             }
