@@ -52,6 +52,10 @@ class User(db.Model):
     timezone = db.Column(db.String(50), default='Asia/Kolkata')
     notification_preferences = db.Column(db.Text)  # JSON object for notification settings
 
+    # Location information for saathi (for SOS notifications)
+    latitude = db.Column(db.Float, nullable=True)
+    longitude = db.Column(db.Float, nullable=True)
+
     # Conversation state tracking
     current_conversation_stage = db.Column(db.String(100), default='general')  # Track current conversation stage
     
@@ -970,8 +974,28 @@ def seed_initial_saathis():
             "email": "saathi.rohan@sehara.com",
             "password": "password123",
             "role": "saathi" # CRITICAL: Set the role correctly
+        },
+        {
+            "patient_id": "SAATHI002",
+            "full_name": "Priya Patel (Saathi)",
+            "email": "saathi.priya@sehara.com",
+            "password": "password123",
+            "role": "saathi"
+        },
+        {
+            "patient_id": "SAATHI003",
+            "full_name": "Arjun Kumar (Saathi)",
+            "email": "saathi.arjun@sehara.com",
+            "password": "password123",
+            "role": "saathi"
+        },
+        {
+            "patient_id": "SAATHI004",
+            "full_name": "Meera Singh (Saathi)",
+            "email": "saathi.meera@sehara.com",
+            "password": "password123",
+            "role": "saathi"
         }
-        # You can add more Saathi users here
     ]
 
     for saathi_data in saathis_to_add:
