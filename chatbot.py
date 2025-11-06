@@ -12,18 +12,14 @@ import numpy as np
 import atexit
 # (In chatbot.py, after the import statements)
 import re
-from functools import wraps, lru_cache
+from functools import wraps
 import uuid
 import base64
 from io import BytesIO
 import groq
 from agora_token_builder import RtcTokenBuilder, RtmTokenBuilder
 from werkzeug.middleware.proxy_fix import ProxyFix
-import requests
 import math
-
-from pydub import AudioSegment
-
 sos_events ={}
 # For simplicity, a global dictionary is used here.
 
@@ -175,7 +171,7 @@ CORS(app, supports_credentials=True, resources={
             "https://sahara-sathi.onrender.com",
             "https://sehat-sahara.onrender.com",
             "https://visionary-heliotrope-8203e0.netlify.app",
-            "https://render-atua.onrender.com" # Allow all origins for static files
+            "https://render-atua.onrender.com"  # Allow all origins for static files
         ],
         "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
         "allow_headers": ["Content-Type", "Authorization", "X-Requested-With"],
@@ -239,10 +235,6 @@ db.init_app(app)
 VAPID_PRIVATE_KEY = os.environ.get("VAPID_PRIVATE_KEY")
 VAPID_PUBLIC_KEY = os.environ.get("VAPID_PUBLIC_KEY")
 VAPID_CLAIM_EMAIL = "dedpull2005@outlook.com"
-# You ONLY need to set these two environment variables
-BHASHINI_USER_ID = os.environ.get("BHASHINI_USER_ID")
-BHASHINI_ULCA_API_KEY = os.environ.get("BHASHINI_ULCA_API_KEY") # This is your "Udyat Key"
-BHASHINI_PIPELINE_CONFIG_URL = "https://meity-auth.ulcacontrib.org/ulca/apis/v0/model/getModelsPipeline"
 
 if not VAPID_PRIVATE_KEY or not VAPID_PUBLIC_KEY:
     logger.critical("FATAL ERROR: VAPID_PRIVATE_KEY and VAPID_PUBLIC_KEY are not set in the environment.")
@@ -252,251 +244,36 @@ if not VAPID_PRIVATE_KEY or not VAPID_PUBLIC_KEY:
 
 # --- BACKGROUND SCHEDULER FOR SENDING NOTIFICATIONS ---
 scheduler = BackgroundScheduler(daemon=True)
-# This function uses your "Udyat Key" (ulcaApiKey) to get your "Inference API Key"
-@lru_cache(maxsize=5)
-def get_bhashini_config(pipeline_id):
-    """
-    Calls Bhashini's config endpoint to get the real compute URL,
-    inference API key, and service IDs for a specific pipeline.
-    """
-    if not BHASHINI_USER_ID or not BHASHINI_ULCA_API_KEY:
-        logger.error("FATAL: BHASHINI_USER_ID or BHASHINI_ULCA_API_KEY are not set.")
-        return None
-        
-    headers = {
-        "userID": BHASHINI_USER_ID,
-        "ulcaApiKey": BHASHINI_ULCA_API_KEY
-    }
-    payload = {
-        "pipelineTasks": [
-            {"taskType": "asr"},
-            {"taskType": "translation"},
-            {"taskType": "tts"}
-        ],
-        "pipelineRequestConfig": {
-            "pipelineId": pipeline_id
-        }
-    }
-    try:
-        response = requests.post(BHASHINI_PIPELINE_CONFIG_URL, json=payload, headers=headers)
-        response.raise_for_status() # Raises an error for bad responses (4xx, 5xx)
-        config_data = response.json()
-        
-        # This is the "Inference API Key" Bhashini gives you
-        inference_endpoint = config_data["pipelineInferenceAPIEndPoint"]
-        inference_api_key_header_name = inference_endpoint["inferenceApiKey"]["name"]
-        inference_api_key_value = inference_endpoint["inferenceApiKey"]["value"]
-        
-        # This dict maps tasks to their required serviceId
-        service_id_map = {}
-        for task in config_data["pipelineResponseConfig"]:
-            task_type = task["taskType"]
-            for config in task["config"]:
-                if task_type == "asr":
-                    service_id_map[f"asr-{config['language']['sourceLanguage']}"] = config["serviceId"]
-                elif task_type == "translation":
-                    lang_key = f"nmt-{config['language']['sourceLanguage']}-{config['language']['targetLanguage']}"
-                    service_id_map[lang_key] = config["serviceId"]
-                elif task_type == "tts":
-                    service_id_map[f"tts-{config['language']['sourceLanguage']}"] = config["serviceId"]
 
-        return {
-            "compute_url": inference_endpoint["callbackUrl"],
-            "compute_api_key_name": inference_api_key_header_name,
-            "compute_api_key_value": inference_api_key_value,
-            "service_ids": service_id_map
-        }
-    except Exception as e:
-        logger.error(f"FATAL: Could not get Bhashini config for pipeline {pipeline_id}: {e}", exc_info=True)
-        return None
+# Replace your entire function with this one
+# In chatbot.py
 
-# This function uses the "Inference API Key" to do the actual work
-def call_bhashini_pipeline(task_list, input_data, source_lang, target_lang=None):
-    """
-    Calls the Bhashini pipeline compute API for STT, NMT, or TTS.
-    """
-    
-    # !!! IMPORTANT: REPLACE THIS WITH YOUR PIPELINE ID FROM THE BHASHINI DASHBOARD !!!
-    # This ID controls which models (e.g., IIT-M, AI4Bharat) you are using.
-    PIPELINE_ID = "64392f96daac500b55c543cd" # e.g., "64392f96daac500b55c543cd"
-    
-    config = get_bhashini_config(PIPELINE_ID)
-    if not config:
-        raise Exception("Bhashini config is not available. Check API keys and Pipeline ID.")
-
-    # Use the "Inference API Key" (compute_api_key_value) in the header
-    headers = {
-        config["compute_api_key_name"]: config["compute_api_key_value"],
-        "Content-Type": "application/json"
-    }
-    
-    pipeline_tasks = []
-    
-    # Construct the task payload based on Bhashini's requirements
-    for task_type in task_list:
-        if task_type == "asr":
-            service_id = config["service_ids"].get(f"asr-{source_lang}")
-            if not service_id:
-                raise Exception(f"No Bhashini ASR serviceId found for language: {source_lang}")
-            pipeline_tasks.append({
-                "taskType": "asr",
-                "config": {
-                    "language": {"sourceLanguage": source_lang},
-                    "serviceId": service_id,
-                    "audioFormat": "wav",
-                    "samplingRate": 16000
-                }
-            })
-        
-        elif task_type == "translation":
-            service_id = config["service_ids"].get(f"nmt-{source_lang}-{target_lang}")
-            if not service_id:
-                raise Exception(f"No Bhashini NMT serviceId found for: {source_lang}->{target_lang}")
-            pipeline_tasks.append({
-                "taskType": "translation",
-                "config": {
-                    "language": {
-                        "sourceLanguage": source_lang,
-                        "targetLanguage": target_lang
-                    },
-                    "serviceId": service_id
-                }
-            })
-            
-        elif task_type == "tts":
-            service_id = config["service_ids"].get(f"tts-{source_lang}")
-            if not service_id:
-                raise Exception(f"No Bhashini TTS serviceId found for language: {source_lang}")
-            pipeline_tasks.append({
-                "taskType": "tts",
-                "config": {
-                    "language": {"sourceLanguage": source_lang},
-                    "serviceId": service_id,
-                    "gender": "female" # You can make this configurable
-                }
-            })
-
-    payload = {
-        "pipelineTasks": pipeline_tasks,
-        "inputData": input_data
-    }
-    
-    response = requests.post(config["compute_url"], json=payload, headers=headers)
-    response.raise_for_status()
-    return response.json()
-
-#
-#
-# IN: chatbot.py
-# REPLACE your @app.route("/v1/voice-input", ...) with this:
-#
-@app.route("/v1/voice-input", methods=["POST"])
-def voice_input():
-    """
-    Handles VOICE-BASED chat messages.
-    Converts WEBM to WAV, ALWAYS calls ASR,
-    Translates (if needed), calls helper, translates back (if needed),
-    ALWAYS calls TTS, and returns JSON with audio.
-    """
-    update_system_state('predict_voice')
-    
-    try:
-        audio_file = request.files.get('audio')
-        user_id = request.form.get('userId')
-        user_lang = request.form.get('language', 'en')
-
-        if not audio_file or not user_id:
-            return jsonify({"error": "audio file and userId are required."}), 400
-
-        # --- 1. Audio Conversion (No change) ---
-        try:
-            webm_audio = AudioSegment.from_file(audio_file, format="webm")
-            wav_audio = webm_audio.set_channels(1).set_frame_rate(16000)
-            wav_in_memory = BytesIO()
-            wav_audio.export(wav_in_memory, format="wav")
-            wav_in_memory.seek(0)
-            audio_bytes = wav_in_memory.read()
-            audio_base64 = base64.b64encode(audio_bytes).decode('utf-8')
-        except Exception as audio_err:
-            logger.error(f"Failed to convert audio for Bhashini: {audio_err}", exc_info=True)
-            return jsonify({"error": "Failed to process audio file."}), 500
-        
-        # --- 2. MODIFIED: Bhashini STT (ALWAYS RUNS) ---
-        stt_input = {"audio": [{"audioContent": audio_base64}]}
-        # Call ASR with the correct language ('en', 'hi', or 'pa')
-        stt_result = call_bhashini_pipeline(["asr"], stt_input, source_lang=user_lang)
-        transcribed_text = stt_result["pipelineResponse"][0]["output"][0]["source"]
-        logger.info(f"Bhashini STT ({user_lang}): '{transcribed_text}'")
-        
-        # --- 3. NMT (Source Language -> English) (SKIPS IF ENGLISH) ---
-        english_text = transcribed_text # Default to English
-        if user_lang != "en" and transcribed_text: # <-- This check STAYS
-            nmt_en_input = {"input": [{"source": transcribed_text}]}
-            nmt_en_result = call_bhashini_pipeline(["translation"], nmt_en_input, source_lang=user_lang, target_lang="en")
-            english_text = nmt_en_result["pipelineResponse"][0]["output"][0]["target"]
-            logger.info(f"Bhashini NMT ({user_lang}->en): '{english_text}'")
-        
-        # 4. Call Llama 3.3 (The "Brain")
-        predict_data = {
-            "message": english_text,
-            "userId": user_id,
-            "language": user_lang 
-        }
-        action_payload = _predict_logic_helper(predict_data)
-        
-        # 5. NMT (English -> Source Language) (SKIPS IF ENGLISH)
-        english_response_text = action_payload["response"]
-        translated_text = english_response_text # Default to English
-        if user_lang != "en" and english_response_text: # <-- This check STAYS
-            nmt_out_input = {"input": [{"source": english_response_text}]}
-            nmt_out_result = call_bhashini_pipeline(["translation"], nmt_out_input, source_lang="en", target_lang=user_lang)
-            translated_text = nmt_out_result["pipelineResponse"][0]["output"][0]["target"]
-            logger.info(f"Bhashini NMT (en->{user_lang}): '{translated_text}'")
-
-        # --- 6. MODIFIED: Bhashini TTS (ALWAYS RUNS) ---
-        audio_base64_out = None
-        if translated_text: # Check if there's any text to speak
-            tts_input = {"input": [{"source": translated_text}]}
-            # Call TTS with the *target* language (which could be 'en')
-            tts_result = call_bhashini_pipeline(["tts"], tts_input, source_lang=user_lang)
-            audio_base64_out = tts_result["pipelineResponse"][0]["audio"][0]["audioContent"]
-            logger.info(f"Bhashini TTS ({user_lang}) successful, audio size: {len(audio_base64_out)}")
-        
-        # 7. Send the final package to the frontend
-        action_payload["response"] = translated_text
-        action_payload["audioData"] = audio_base64_out
-        # --- ADD THIS LINE ---
-        action_payload["transcribed_text"] = transcribed_text
-        # --- END OF ADD ---
-        
-        db.session.commit()
-        return jsonify(action_payload)
-
-    except Exception as e:
-        logger.error(f"FATAL ERROR in /v1/voice-input: {e}", exc_info=True)
-        db.session.rollback()
-        return jsonify({"response": "I'm sorry, I couldn't process your voice input. Please try again.", "action": "ERROR"}), 500
-
-
-
-        
 # Replace your entire function with this one
 def check_and_send_reminders():
-    """The background job that checks for due reminders, sends push notifications, and SETS PENDING FLAG."""
+    """The background job that checks for due reminders, sends push notifications, and reschedules."""
+    # --- ADDED: Ensure app context for database operations ---
     with app.app_context():
+        # --- ADDED: Load memory at the start of the job ---
+        #memory_loaded = conversation_memory.load_from_file(os.path.join(models_path, 'conversation_memory.json'))
+        #if not memory_loaded:
+             #logger.error("Failed to load conversation memory in reminder job. Aborting check.")
+             #return # Cannot proceed without memory
+
         try:
             now_utc = datetime.now(timezone.utc)
             reminders_updated = False # Flag to check if we need to save
 
+            # Iterate through a copy of profiles in case memory changes during iteration (less likely here but safer)
             for user_id, profile in list(conversation_memory.user_profiles.items()):
+                # Iterate through a copy of reminders for safe modification
                 for reminder in list(profile.medicine_reminders):
-                    # Check if reminder is enabled, has a next alert time, and hasn't been "sent" (pending) yet
+                    # Check if reminder is enabled and has a next alert time
                     if reminder.get('reminder_enabled', True) and reminder.get('next_alert_utc') and not reminder.get('alert_sent'):
                         try:
                             alert_time_utc = datetime.fromisoformat(reminder['next_alert_utc'])
                         except ValueError:
                              logger.error(f"Invalid ISO format for next_alert_utc for user {user_id}, reminder {reminder.get('medicine_name')}. Skipping.")
-                             continue
+                             continue # Skip this reminder
 
                         # Check if the alert time is now or in the past
                         if alert_time_utc <= now_utc:
@@ -505,41 +282,58 @@ def check_and_send_reminders():
                             user_db = User.query.filter_by(patient_id=profile.user_id).first()
                             if not user_db:
                                 logger.warning(f"User DB record not found for patient_id {profile.user_id}. Cannot send reminder.")
-                                continue
+                                continue # Skip if user doesn't exist in DB
 
                             subscriptions = PushSubscription.query.filter_by(user_id=user_db.id).all()
-                            
-                            # --- START: THIS IS THE CORRECTED LOGIC ---
-                            # Set flags to indicate an alert was sent and is pending acknowledgment
-                            # We DO NOT reschedule next_alert_utc here.
-                            reminder['pending_alert'] = True
-                            reminder['alert_sent'] = True # Mark as sent to prevent re-sending this specific alert
-                            reminders_updated = True
-                            logger.info(f"Set pending_alert=True for {reminder['medicine_name']} for user {profile.user_id}")
-                            # --- END: THIS IS THE CORRECTED LOGIC ---
-
                             if not subscriptions:
-                                logger.warning(f"No push subscriptions found for user {profile.user_id}. Alert is set to pending in-app.")
-                                continue # Go to the next reminder, no devices to send to
+                                logger.warning(f"No push subscriptions found for user {profile.user_id}. Marking alert as sent.")
+                                # --- START: Reschedule even if no subscription ---
+                                user_timezone = reminder.get("timezone", "UTC")
+                                times_list = reminder.get("times", [])
+                                if times_list:
+                                    reminder['next_alert_utc'] = conversation_memory._calculate_next_utc_timestamp(times_list, user_timezone)
+                                    reminder['alert_sent'] = False # Reset flag for the *next* alert
+                                    logger.info(f"Rescheduled reminder (no subs) for {reminder['medicine_name']} to {reminder['next_alert_utc']}")
+                                    reminders_updated = True
+                                else:
+                                    reminder['alert_sent'] = True # Cannot reschedule without times
+                                    reminders_updated = True
+                                # --- END: Reschedule even if no subscription ---
+                                continue
 
                             push_payload = json.dumps({
                                 "title": "💊 Sehat Sahara Reminder",
                                 "options": {
                                     "body": f"It's time to take: {reminder['medicine_name']} ({reminder.get('dosage', 'N/A')})",
+                                    # --- ADDED: More specific icon ---
                                     "icon": "https://i.ibb.co/bmdxHqN/pills.png",
+                                    # --- START: NEW ALARM OPTIONS ---
+                                    # 1. (Optional) Vibrate pattern (for mobile)
+                                    "vibrate": [200, 100, 200, 100, 200],
+                                    
+                                    # 2. Custom sound file (must be in your static folder)
+                                    # In chatbot.py
+                                    "sound": "https://saharasaathi.netlify.app/static/sound/alarm.mp3", 
+                                    
+                                    # 3. (Recommended) Keep notification on screen until user interacts
+                                    "requireInteraction": True, 
+                                    # --- END: NEW ALARM OPTIONS ---
                                     "actions": [
                                         {"action": "mark-taken", "title": "Mark as Taken"},
                                         {"action": "close", "title": "Close"}
                                     ],
                                     "data": {
+                                        # --- ADDED: Send necessary data to frontend ---
                                         "action": "mark-taken",
                                         "medicineName": reminder['medicine_name'],
                                         "userId": profile.user_id
                                     },
+                                    # --- ADDED: Tag to allow replacing pending notifications ---
                                     "tag": f"med-reminder-{profile.user_id}-{reminder['medicine_name'].replace(' ','-')}"
                                 }
                             })
 
+                            sent_successfully = False
                             for sub in subscriptions:
                                 try:
                                     webpush(
@@ -549,23 +343,62 @@ def check_and_send_reminders():
                                         vapid_claims={"sub": "mailto:" + VAPID_CLAIM_EMAIL}
                                     )
                                     logger.info(f"Push notification sent successfully to a device for user {profile.user_id}")
+                                    sent_successfully = True
                                 except WebPushException as ex:
                                     logger.error(f"Failed to send push notification: {ex}")
+                                    # Handle expired/invalid subscriptions
                                     if ex.response and ex.response.status_code in [404, 410]:
                                         logger.info(f"Deleting expired subscription for user {profile.user_id}")
                                         db.session.delete(sub)
+                                        # Commit immediately to remove invalid sub
                                         db.session.commit()
                                 except Exception as push_err:
                                      logger.error(f"Unexpected error sending push: {push_err}")
-                            
-                            # --- REMOVED: The old rescheduling logic that was here is gone. This is correct. ---
 
+
+                            # --- START: Modified Rescheduling Logic ---
+                            if sent_successfully:
+                                logger.info(f"Successfully sent alert for {reminder['medicine_name']} to user {profile.user_id}. Now rescheduling.")
+                            else:
+                                logger.warning(f"Failed to send alert for {reminder['medicine_name']} to user {profile.user_id} (no valid subscriptions?). Still rescheduling.")
+
+                            # Calculate the next alert time REGARDLESS of send success
+                            user_timezone = reminder.get("timezone", "UTC")
+                            times_list = reminder.get("times", [])
+
+                            # Optional: Add duration check here later if needed
+                            start_date_str = reminder.get('start_date')
+                            duration_days = reminder.get('duration_days')
+                            if start_date_str and duration_days:
+                                start_date = datetime.strptime(start_date_str, '%Y-%m-%d').date()
+                                end_date = start_date + timedelta(days=duration_days)
+                                if datetime.now().date() >= end_date:
+                                    logger.info(f"Reminder duration ended for {reminder['medicine_name']}. Disabling.")
+                                    reminder['reminder_enabled'] = False
+                                    reminders_updated = True
+                                    continue # Skip rescheduling
+
+                            if times_list:
+                                next_alert_iso = conversation_memory._calculate_next_utc_timestamp(times_list, user_timezone)
+                                reminder['next_alert_utc'] = next_alert_iso
+                                reminder['alert_sent'] = False # Reset flag for the *next* schedule
+                                logger.info(f"Rescheduled reminder for {reminder['medicine_name']} to {next_alert_iso}")
+                                reminders_updated = True
+                            else:
+                                # Cannot reschedule without a time list, mark as sent to prevent re-sending
+                                reminder['alert_sent'] = True
+                                logger.warning(f"Reminder for {reminder['medicine_name']} has no times_list, cannot reschedule. Marked as sent.")
+                                reminders_updated = True
+                            # --- END: Modified Rescheduling Logic ---
+
+            # --- Save memory ONCE after checking all users/reminders ---
             if reminders_updated:
                 logger.info("Saving updated reminder schedules to memory file.")
                 conversation_memory.save_to_file(os.path.join(models_path, 'conversation_memory.json'))
 
         except Exception as e:
             logger.error(f"Error in background reminder job: {e}", exc_info=True)
+            # Rollback potential DB changes if error occurred during subscription deletion
             db.session.rollback()
 
 
@@ -866,6 +699,27 @@ def convert_numpy_types(obj):
     else:
         return obj
 
+def calculate_distance(lat1, lng1, lat2, lng2):
+    """Calculate distance between two points using Haversine formula (in km)"""
+    # Convert to radians
+    lat1_rad = math.radians(lat1)
+    lng1_rad = math.radians(lng1)
+    lat2_rad = math.radians(lat2)
+    lng2_rad = math.radians(lng2)
+
+    # Haversine formula
+    dlat = lat2_rad - lat1_rad
+    dlng = lng2_rad - lng1_rad
+
+    a = math.sin(dlat/2)**2 + math.cos(lat1_rad) * math.cos(lat2_rad) * math.sin(dlng/2)**2
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
+
+    # Earth's radius in km
+    R = 6371.0
+    distance = R * c
+
+    return distance
+
 
 # Route to serve uploaded files
 @app.route('/uploads/<path:filename>')
@@ -897,6 +751,19 @@ def register():
         if not full_name: errors.append("Full name is required")
         if not email or "@" not in email: errors.append("Valid email is required")
         if not password or len(password) < 8: errors.append("Password must be at least 8 characters")
+
+        # Validate phone number (must be exactly 10 digits)
+        if phone_number:
+            # Remove any non-digit characters for validation
+            clean_phone = ''.join(filter(str.isdigit, phone_number))
+            if len(clean_phone) != 10:
+                errors.append("Phone number must be exactly 10 digits")
+            else:
+                # Store the cleaned phone number
+                phone_number = clean_phone
+        else:
+            errors.append("Phone number is required")
+
         if errors:
             return jsonify({"success": False, "message": "Fix the errors below.", "errors": errors}), 400
 
@@ -1747,8 +1614,7 @@ def manage_medicine_reminders():
 
         if action == "get":
             reminders = conversation_memory.get_medicine_reminders(user_id)
-            #alerts = conversation_memory.get_reminder_alerts(user_id)
-            alerts = conversation_memory.get_pending_chat_alerts(user_id)
+            alerts = conversation_memory.get_reminder_alerts(user_id)
             return jsonify({
                 "success": True,
                 "reminders": reminders,
@@ -1789,58 +1655,13 @@ def manage_medicine_reminders():
         elif action == "update_adherence":
             medicine_name = data.get('medicine_name')
             taken_time = data.get('taken_time', datetime.now().strftime('%H:%M'))
-            # --- START: ADD RESCHEDULING LOGIC ---
-            reminder_to_update = None
-            profile = conversation_memory.user_profiles.get(user_id)
-            if profile:
-                for r in profile.medicine_reminders:
-                    if r.get('medicine_name') == medicine_name:
-                        reminder_to_update = r
-                        break
-            
-            if reminder_to_update:
-                reminder_to_update['pending_alert'] = False
-                reminder_to_update['alert_sent'] = False
-                # Reschedule for the next time
-                user_timezone = reminder_to_update.get("timezone", "UTC")
-                times_list = reminder_to_update.get("times", [])
-                if times_list:
-                    reminder_to_update['next_alert_utc'] = conversation_memory._calculate_next_utc_timestamp(times_list, user_timezone)
-                    logger.info(f"Adherence updated, rescheduled {medicine_name} to {reminder_to_update['next_alert_utc']}")
-                
-                conversation_memory.update_reminder_adherence(user_id, medicine_name, taken_time)
-                conversation_memory.save_to_file(os.path.join(models_path, 'conversation_memory.json'))
-            # --- END: ADD RESCHEDULING LOGIC ---
-
+            conversation_memory.update_reminder_adherence(user_id, medicine_name, taken_time)
+            # --- ADD THIS LINE ---
+            # Reschedule the reminder for the next day and save the change
+            conversation_memory.recalculate_all_next_alerts(user_id)
+            conversation_memory.save_to_file(os.path.join(models_path, 'conversation_memory.json'))
             return jsonify({"success": True, "message": f"Medicine {medicine_name} marked as taken"})
-        # --- ADD THIS NEW ACTION ---
-        elif action == "skip_alert":
-            medicine_name = data.get('medicine_name')
-            if not medicine_name:
-                return jsonify({"error": "medicine_name is required for skip"}), 400
 
-            reminder_to_update = None
-            profile = conversation_memory.user_profiles.get(user_id)
-            if profile:
-                for r in profile.medicine_reminders:
-                    if r.get('medicine_name') == medicine_name:
-                        reminder_to_update = r
-                        break
-            
-            if reminder_to_update:
-                reminder_to_update['pending_alert'] = False
-                reminder_to_update['alert_sent'] = False
-                # Reschedule for the next time
-                user_timezone = reminder_to_update.get("timezone", "UTC")
-                times_list = reminder_to_update.get("times", [])
-                if times_list:
-                    reminder_to_update['next_alert_utc'] = conversation_memory._calculate_next_utc_timestamp(times_list, user_timezone)
-                    logger.info(f"Alert skipped, rescheduled {medicine_name} to {reminder_to_update['next_alert_utc']}")
-                
-                conversation_memory.save_to_file(os.path.join(models_path, 'conversation_memory.json'))
-            
-            return jsonify({"success": True, "message": "Alert skipped and rescheduled"})
-        # --- END NEW ACTION ---
         else:
             return jsonify({"error": "Invalid action."}), 400
         
@@ -2090,65 +1911,57 @@ def _get_or_create_symptom_context(user_id: str, initial_symptom: Optional[str] 
 # In chatbot.py
 
 # In chatbot.py
-#
-# IN: chatbot.py
-#
-def _predict_logic_helper(data: dict) -> dict:
+
+@app.route("/v1/predict", methods=["POST"])
+def predict():
     """
-    This is your *ENTIRE EXISTING* /v1/predict function's logic,
-    refactored to be a simple Python function.
-    It takes a dictionary 'data' and returns a dictionary 'action_payload'.
-    
-    It assumes nlu_processor, sehat_sahara_client, conversation_memory,
-    response_generator, db, and logger are all available in its scope.
+    Enhanced prediction endpoint with flexible state management and isolated, stateful logic
+    for booking and symptom checking.
     """
     try:
         start_time = time.time()
+        update_system_state('predict')
 
-        # 1. Get data from the 'data' dict, not request.json
+        data = request.get_json() or {}
         user_message = (data.get("message") or "").strip()
         user_id_str = (data.get("userId") or "").strip()
         button_action = data.get("buttonAction")
         button_params = data.get("parameters", {})
-        
-        # This is the user's *original* language (e.g., 'hi', 'pa')
-        # The user_message is already translated to English
-        user_language = data.get("language", "en") 
 
         if not user_id_str or not user_message:
-            return {"response": "User ID and message are required.", "action": "ERROR"}
+            return jsonify({"error": "userId and message are required."}), 400
 
         current_user = User.query.filter_by(patient_id=user_id_str, is_active=True).first()
         if not current_user:
-            return {"response": "User not found.", "action": "ERROR"}
+            return jsonify({"error": "User not found.", "login_required": True}), 401
 
-        # 2. NLU Processor (Your dependency is here)
-        # NLU is now processing the English text
-        nlu_understanding = nlu_processor.understand_user_intent(user_message, sehat_sahara_mode=True)
-        
-        # 3. Language Persistence (Your logic is here)
-        # We use user_language (the *original* lang) not the NLU's detection
-        # (which would always be 'en' now)
-        detected_lang = user_language 
-        if current_user and current_user.preferred_language != detected_lang:
-            logger.info(f"Updating user {current_user.patient_id} preferred language from '{current_user.preferred_language}' to '{detected_lang}'")
-            current_user.preferred_language = detected_lang
-            db.session.add(current_user)
-        
-        primary_intent = nlu_understanding.get('primary_intent', 'general_inquiry')
+        # --- START: MODIFIED STATE MANAGEMENT LOGIC ---
 
-        # 4. State Management (Your task/memory logic is here)
-        # (Dependency on conversation_memory)
+        # Get current task from conversation memory
         if hasattr(initialize_ai_components, '_conversation_memory'):
             current_task_from_memory = initialize_ai_components._conversation_memory.get_current_task(current_user.patient_id)
             task_in_progress = current_task_from_memory.get('task') if current_task_from_memory else None
         else:
             task_in_progress = None
 
+        nlu_understanding = nlu_processor.understand_user_intent(user_message, sehat_sahara_mode=True)
+        
+        # --- FIX 1: Persist Detected Language ---
+        # This addresses Root Cause Analysis Problem 1
+        detected_lang = nlu_understanding.get('language_detected', 'hi')
+        if current_user and current_user.preferred_language != detected_lang:
+            logger.info(f"Updating user {current_user.patient_id} preferred language from '{current_user.preferred_language}' to '{detected_lang}'")
+            current_user.preferred_language = detected_lang
+            db.session.add(current_user) # Add to session, will be committed with the ConversationTurn
+        # --- END OF FIX 1 ---
+        
+        primary_intent = nlu_understanding.get('primary_intent', 'general_inquiry')
+
+        # FLEXIBLE STATE MANAGEMENT: Check if the user's new intent is unrelated to the current task.
         related_booking_intents = ['appointment_booking', 'SELECT_SPECIALTY', 'SELECT_DOCTOR', 'SELECT_DATE', 'SELECT_TIME', 'SELECT_MODE']
         related_symptom_intents = ['symptom_triage', 'CONTINUE_SYMPTOM_CHECK']
 
-        # Your symptom triage correction logic
+        # Special handling for symptom triage context (from previous fix)
         if task_in_progress == 'symptom_triage' and primary_intent == 'out_of_scope':
             symptom_followup_indicators = [
                 'days', 'hours', 'weeks', 'since', 'ago', 'started', 'began',
@@ -2161,7 +1974,6 @@ def _predict_logic_helper(data: dict) -> dict:
                 logger.info(f"Correcting misclassified symptom follow-up for user {current_user.patient_id}")
                 primary_intent = 'symptom_triage'
 
-        # Your task switching logic
         is_unrelated_intent = (
             task_in_progress and
             primary_intent not in related_booking_intents and
@@ -2175,14 +1987,17 @@ def _predict_logic_helper(data: dict) -> dict:
             logger.warning(f"User {current_user.patient_id} switched intent from '{task_in_progress}' to '{primary_intent}'. Completing old task.")
             if hasattr(initialize_ai_components, '_conversation_memory'):
                 initialize_ai_components._conversation_memory.complete_task(current_user.patient_id)
-            task_in_progress = None # Reset the task
+            task_in_progress = None # Reset the task so the logic below can start a new one.
 
-        # 5. Build AI Override Message (Your flow logic is here)
+        # --- END: MODIFIED STATE MANAGEMENT LOGIC ---
+
         ai_message_override = user_message
 
-        # --- APPOINTMENT BOOKING FLOW ---
+        # --- TASK MANAGEMENT LOGIC ---
         if task_in_progress == 'appointment_booking':
+            # --- START: ADDED RESTART CHECK ---
             if primary_intent == 'appointment_booking' and not button_action:
+                # User explicitly said "book appointment" again, restart the flow
                 logger.info(f"User {current_user.patient_id} requested to restart booking flow.")
                 booking_context = _get_or_create_booking_context(current_user.patient_id)
                 booking_context.clear() # Clear old context
@@ -2192,9 +2007,12 @@ def _predict_logic_helper(data: dict) -> dict:
                 ai_message_override = f"CONTEXT: User wants to restart booking. Ask them to select a specialty using these buttons: [{specialty_buttons}]"
                 if hasattr(initialize_ai_components, '_conversation_memory'):
                     initialize_ai_components._conversation_memory.set_current_task(current_user.patient_id, 'appointment_booking', booking_context)
-                task_in_progress = 'handled_restart' 
-            
-            if task_in_progress == 'appointment_booking': 
+                # Skip the rest of the old booking logic for this turn
+                task_in_progress = 'handled_restart' # Set a flag to prevent further processing in this block
+            # --- END: ADDED RESTART CHECK ---
+
+            # --- Original booking logic continues below, now conditional ---
+            if task_in_progress == 'appointment_booking': # Check flag
                 booking_context = _get_or_create_booking_context(current_user.patient_id)
                 last_step = booking_context.get('last_step')
                 logger.info(f"Booking flow active for user {current_user.patient_id}: step={last_step}")
@@ -2262,16 +2080,21 @@ def _predict_logic_helper(data: dict) -> dict:
                     else:
                         ai_message_override = "CONTEXT: Invalid mode. Please pick a mode from the list."
                 else:
+                    # This handles cases where the input doesn't match the expected step (e.g., "my head pains")
                     logger.warning(f"Booking flow stalled. User input '{user_message}' did not match step '{last_step}'. Re-prompting.")
                     ai_message_override = f"CONTEXT: User provided an unexpected response. Please re-ask them to select an option for the current step: '{last_step}'."
 
+                # Save context only if the restart wasn't just handled
                 if hasattr(initialize_ai_components, '_conversation_memory') and task_in_progress != 'handled_restart':
                      initialize_ai_components._conversation_memory.set_current_task(current_user.patient_id, 'appointment_booking', booking_context)
 
-        # --- SYMPTOM TRIAGE FLOW ---
+        # --- START: REVISED SYMPTOM TRIAGE LOGIC ---
         elif task_in_progress == 'symptom_triage':
             symptom_context = _get_or_create_symptom_context(current_user.patient_id)
+
+            # Always treat follow-up messages as part of the symptom check
             primary_intent = 'symptom_triage'
+
             symptom_context['symptoms_reported'].append(user_message)
             turn_count = symptom_context.get('turn_count', 0)
 
@@ -2283,9 +2106,13 @@ def _predict_logic_helper(data: dict) -> dict:
                     "Acknowledge their latest reply and ask the *next* logical clarifying question. "
                     "DO NOT repeat a question that has already been answered in the history."
                 )
+
+                # Correctly increment the turn counter
                 symptom_context['turn_count'] = turn_count + 1
+
                 if hasattr(initialize_ai_components, '_conversation_memory'):
                     initialize_ai_components._conversation_memory.set_current_task(current_user.patient_id, 'symptom_triage', symptom_context)
+
             else:
                 reported_symptoms_str = '; '.join(symptom_context['symptoms_reported'])
                 ai_message_override = (
@@ -2300,8 +2127,9 @@ def _predict_logic_helper(data: dict) -> dict:
                     )
                 if hasattr(initialize_ai_components, '_conversation_memory'):
                     initialize_ai_components._conversation_memory.complete_task(current_user.patient_id)
-        
-        # --- NEW TASK FLOW ---
+        # --- END: REVISED SYMPTOM TRIAGE LOGIC ---
+
+        # --- This 'else' block handles starting NEW tasks ---
         else:
             if primary_intent == 'appointment_booking':
                 booking_context = _get_or_create_booking_context(current_user.patient_id)
@@ -2315,17 +2143,18 @@ def _predict_logic_helper(data: dict) -> dict:
 
             elif primary_intent == 'symptom_triage':
                 symptom_context = _get_or_create_symptom_context(current_user.patient_id, initial_symptom=user_message)
+                # Ensure context is clean for a new triage
                 symptom_context.clear()
-                symptom_context['symptoms_reported'] = [user_message]
-                symptom_context['turn_count'] = 1
-                ai_message_override = f"CONTEXT: Start of a symptom check. User said '{user_message}'. Acknowledge their symptom and ask your first clarifying question (e.g., 'For how long?')."
+                symptom_context['symptoms_reported'] = [user_message] # Start with the first symptom
+                symptom_context['turn_count'] = 1 # Set turn count to 1
+                ai_message_override = f"CONTEXT: Start of a symptom check. User said '{user_message}'. Acknowledge their symptom and ask your first clarifying question (e.g., 'For how long?' or 'Is it a sharp or dull pain?')."
                 if hasattr(initialize_ai_components, '_conversation_memory'):
                     initialize_ai_components._conversation_memory.set_current_task(current_user.patient_id, 'symptom_triage', symptom_context)
 
-            # Your navigation button logic
+            # --- Guidance Buttons Logic (No changes needed here) ---
             elif primary_intent in ['medicine_scan', 'how_to_medicine_scan']:
                 if hasattr(initialize_ai_components, '_conversation_memory'):
-                    initialize_ai_components._conversation_memory.complete_task(current_user.patient_id) 
+                    initialize_ai_components._conversation_memory.complete_task(current_user.patient_id) # Clear any previous task
                 ai_message_override = (
                     "CONTEXT: The user wants to scan a medicine. First, provide a brief, friendly guide on how to use the scanner (e.g., 'I can help with that! Just point your camera at the medicine...'). "
                     "Then, your action MUST be 'SHOW_GUIDANCE' and you MUST include this exact button in the interactive_buttons array: "
@@ -2334,58 +2163,67 @@ def _predict_logic_helper(data: dict) -> dict:
 
             elif primary_intent in ['prescription_upload', 'how_to_prescription_upload', 'prescription_inquiry']:
                 if hasattr(initialize_ai_components, '_conversation_memory'):
-                    initialize_ai_components._conversation_memory.complete_task(current_user.patient_id)
+                    initialize_ai_components._conversation_memory.complete_task(current_user.patient_id) # Clear any previous task
                 ai_message_override = (
                     "CONTEXT: The user wants to upload a prescription. First, provide a brief, friendly guide on how to upload (e.g., 'Okay, let\\'s upload your prescription. Make sure the photo is clear...'). "
                     "Then, your action MUST be 'SHOW_GUIDANCE' and you MUST include this exact button in the interactive_buttons array: "
                     '[{"text": "📤 Upload Prescription", "action": "UPLOAD_PRESCRIPTION", "parameters": {}, "style": "primary"}]'
                 )
+            # --- End Guidance Buttons Logic ---
 
-        # 6. AI Response Generation (Dependencies are here)
+        # --- AI RESPONSE GENERATION ---
         if hasattr(initialize_ai_components, '_conversation_memory'):
             history = initialize_ai_components._conversation_memory.get_conversation_context(current_user.patient_id, turns=8)
         else:
             history = []
             
+        # --- FIX 2: Pass Detected Language to AI ---
+        # This addresses Root Cause Analysis Problem 2
+        # We use the 'detected_lang' variable from Fix 1
         context = {
             "user_intent": primary_intent, 
             "context_history": history,
-            "language": "en" # <-- *** CRITICAL: Always tell Llama to respond in English ***
+            "language": detected_lang 
         }
+        # --- END OF FIX 2 ---
 
         action_payload = None
-        # (Dependency on api_ollama_integration.py)
         if sehat_sahara_client and sehat_sahara_client.is_available:
             action_payload_str = sehat_sahara_client.generate_sehatsahara_response(
                 user_message=ai_message_override, context=context
             )
             if action_payload_str:
                 try:
+                    # Clean the JSON string (remove potential markdown, leading/trailing quotes)
                     cleaned_response = action_payload_str.strip().replace('```json', '').replace('```', '').strip()
                     if cleaned_response.startswith('"') and cleaned_response.endswith('"'):
                         cleaned_response = cleaned_response[1:-1]
 
                     action_payload = json.loads(cleaned_response)
 
-                    # Your FINALIZE_BOOKING logic
+                    # --- Final Booking Handling (No changes needed here) ---
                     if action_payload.get("action") == "FINALIZE_BOOKING":
                         booking_context = _get_or_create_booking_context(current_user.patient_id)
-                        doc_id_str = booking_context.get('doctor_id')
+                        doc_id_str = booking_context.get('doctor_id') # Get the string ID like 'DOC002'
                         appt_date = booking_context.get('date')
                         appt_time_str = booking_context.get('time')
+                        # Find doctor using the string ID
                         doctor = Doctor.query.filter_by(doctor_id=doc_id_str).first() if doc_id_str else None
+
 
                         if doctor and appt_date and appt_time_str:
                             appt_datetime = datetime.fromisoformat(f"{appt_date}T{appt_time_str}:00")
+
                             action_payload['response'] = f"Great! I'm confirming your appointment with Dr. {doctor.full_name} for {appt_datetime.strftime('%A, %b %d at %I:%M %p')}. One moment..."
                             action_payload['action'] = 'EXECUTE_BOOKING'
                             action_payload['parameters'] = {
-                                'doctorId': doctor.id, 
+                                'doctorId': doctor.id, # Use the integer primary key ID for the booking endpoint
                                 'appointmentDatetime': appt_datetime.isoformat(),
                                 'appointmentType': booking_context.get('mode', 'Video Call'),
                                 'chiefComplaint': f"Consultation for {booking_context.get('specialty', 'Unknown')}"
                             }
                             action_payload['interactive_buttons'] = []
+
                             if hasattr(initialize_ai_components, '_conversation_memory'):
                                 initialize_ai_components._conversation_memory.complete_task(current_user.patient_id)
                         else:
@@ -2394,13 +2232,15 @@ def _predict_logic_helper(data: dict) -> dict:
                             action_payload['action'] = 'BOOKING_FAILED'
                             if hasattr(initialize_ai_components, '_conversation_memory'):
                                 initialize_ai_components._conversation_memory.complete_task(current_user.patient_id)
-                    
-                    # Your SHOW_MEDICINE_REMEDY logic
+                    # --- End Final Booking Handling ---
+
+                    # --- Medicine Remedy Buttons (No changes needed here) ---
                     if action_payload.get("action") == "SHOW_MEDICINE_REMEDY" and "interactive_buttons" not in action_payload:
                         action_payload["interactive_buttons"] = [
                             {"text": "📷 Scan Medicine", "action": "START_MEDICINE_SCANNER", "parameters": {}, "style": "primary"},
                             {"text": "📤 Upload Prescription", "action": "UPLOAD_PRESCRIPTION", "parameters": {}, "style": "secondary"}
                         ]
+                    # --- End Medicine Remedy Buttons ---
 
                 except json.JSONDecodeError as e:
                     logger.warning(f"Failed to parse AI response as JSON: {e}")
@@ -2410,124 +2250,56 @@ def _predict_logic_helper(data: dict) -> dict:
                     logger.error(f"Error processing AI response: {e}", exc_info=True)
                     action_payload = None
 
-        # 7. Fallback Response (Dependency on ko.py)
+        # --- Fallback Response Generation (No changes needed) ---
         if not action_payload:
             logger.warning(f"AI failed or unavailable. Using local fallback for intent: {primary_intent}")
-            nlu_understanding['language_detected'] = 'en' # Force English fallback
             action_payload = response_generator.generate_response(
                 user_message=user_message,
                 nlu_result=nlu_understanding,
                 user_context={'user_id': current_user.patient_id},
                 conversation_history=history
             )
+            # Ensure fallback has necessary keys
             if "action" not in action_payload: action_payload["action"] = "CONTINUE_CONVERSATION"
             if "parameters" not in action_payload: action_payload["parameters"] = {}
             if "interactive_buttons" not in action_payload: action_payload["interactive_buttons"] = []
 
 
-        # 8. Final Processing & Saving
+        # --- FINAL PROCESSING & SAVING ---
+        # Use primary_intent determined *after* state management for saving
         action_payload_str = json.dumps(action_payload, ensure_ascii=False)
         turn_record = ConversationTurn(
             user_id=current_user.id,
-            user_message=user_message, # Saves the English text
-            bot_response=action_payload_str, # Saves the English JSON
-            detected_intent=primary_intent, 
+            user_message=user_message,
+            bot_response=action_payload_str,
+            detected_intent=primary_intent, # Use the potentially corrected intent
             action_triggered=action_payload.get('action')
         )
-        db.session.add(turn_record) # Add to session, but DO NOT COMMIT
-        
-        # Your button visibility logic
+        db.session.add(turn_record)
+        db.session.commit()
+
+        # Update button visibility if needed (No changes needed here)
         if action_payload.get('action') == 'SHOW_MEDICINE_REMEDY':
             if hasattr(initialize_ai_components, '_conversation_memory'):
                 initialize_ai_components._conversation_memory.update_button_visibility(current_user.patient_id, 'medicine_recommendation')
 
-        response_time = time.time() - start_time
-        logger.info(f"User {current_user.patient_id} logic processed in {response_time:.2f}s. Intent: {primary_intent}, Action: {action_payload.get('action')}")
-        
-        # 9. Return
-        # Add the original user language to the payload so the wrapper can translate back
-        action_payload['user_language'] = user_language 
-        return action_payload
-
-    except Exception as e:
-        logger.error(f"FATAL ERROR in _predict_logic_helper: {e}", exc_info=True)
-        db.session.rollback()
-        return {"response": "I'm having a technical issue. Please try again.", "action": "SHOW_APP_FEATURES", "interactive_buttons": [], "user_language": "en"}
-
-#
-#
-# IN: chatbot.py
-# REPLACE your @app.route("/v1/predict", ...) with this:
-#
-@app.route("/v1/predict", methods=["POST"])
-def predict():
-    """
-    Handles TEXT-BASED chat messages.
-    Translates (if needed), calls helper, translates back (if needed),
-    ALWAYS calls TTS, and returns JSON with audio.
-    """
-    update_system_state('predict')
-    data = request.get_json() or {}
-    user_message = data.get("message", "").strip()
-    user_lang = data.get("language", "en")
-    
-    # --- NEW: Check if this is a button click ---
-    button_action = data.get("buttonAction")
-    # --- END NEW ---
-
-    try:
-        # --- 1. NMT (Translate to English) ---
-        english_text = user_message
-
-        # --- NEW CHECK: Only translate if it's NOT a button click AND lang is not English ---
-        if user_lang != "en" and user_message and not button_action:
-            nmt_en_input = {"input": [{"source": user_message}]}
-            nmt_en_result = call_bhashini_pipeline(["translation"], nmt_en_input, source_lang=user_lang, target_lang="en")
-            english_text = nmt_en_result["pipelineResponse"][0]["output"][0]["target"]
-            logger.info(f"Bhashini NMT ({user_lang}->en): '{english_text}'")
-        elif button_action:
-            logger.info(f"Button click detected ({button_action}). Skipping NMT for message: '{user_message}'")
-        # --- END OF FIX ---
-        
-        # 2. Call the "Brain"
-        data["message"] = english_text # Replace message with (potentially) translated version
-        action_payload = _predict_logic_helper(data)
-
-        # 3. NMT (Translate back to User's Language)
-        english_response_text = action_payload["response"]
-        translated_text = english_response_text # Default to English
-        if user_lang != "en" and english_response_text:
-            nmt_out_input = {"input": [{"source": english_response_text}]}
-            nmt_out_result = call_bhashini_pipeline(["translation"], nmt_out_input, source_lang="en", target_lang=user_lang)
-            translated_text = nmt_out_result["pipelineResponse"][0]["output"][0]["target"]
-            logger.info(f"Bhashini NMT (en->{user_lang}): '{translated_text}'")
-        
-        # 4. ALWAYS CALL BHASHINI TTS
-        audio_base64_out = None
-        if translated_text:
-            tts_input = {"input": [{"source": translated_text}]}
-            tts_result = call_bhashini_pipeline(["tts"], tts_input, source_lang=user_lang) 
-            audio_base64_out = tts_result["pipelineResponse"][0]["audio"][0]["audioContent"]
-            logger.info(f"Bhashini TTS ({user_lang}) successful for text route.")
-
-        # 5. Finalize Response
-        action_payload["response"] = translated_text 
-        action_payload["audioData"] = audio_base64_out
-        
+        # Save conversation memory (No changes needed here)
         try:
             if hasattr(initialize_ai_components, '_conversation_memory'):
                 initialize_ai_components._conversation_memory.save_to_file(os.path.join(models_path, 'conversation_memory.json'))
         except Exception as save_error:
             logger.warning(f"Failed to save conversation memory: {save_error}")
 
-        # 6. Commit DB and Send
-        db.session.commit()
+        response_time = time.time() - start_time
+        logger.info(f"User {current_user.patient_id} processed in {response_time:.2f}s. Intent: {primary_intent}, Action: {action_payload.get('action')}")
+
         return jsonify(action_payload)
 
+    # --- Exception Handling (No changes needed) ---
     except Exception as e:
+        logger.error(f"FATAL ERROR in /predict endpoint: {e}", exc_info=True)
         db.session.rollback()
-        logger.error(f"Failed to process text predict: {e}", exc_info=True)
-        return jsonify({"response": "Error processing text request.", "action": "ERROR"}), 500
+        return jsonify({"response": "I'm having a technical issue. Please try again.", "action": "SHOW_APP_FEATURES", "interactive_buttons": []}), 500
 
 # In chatbot.py, replace the whole book_doctor function with this one
 @app.route("/v1/book-doctor", methods=["POST"])
@@ -2705,13 +2477,9 @@ def scan_medicine():
         update_system_state('scan_medicine', success=False)
         return jsonify({"success": False, "error": "An internal server error occurred during the scan."}), 500
         
-#
-# IN: chatbot.py
-# REPLACE your @app.route("/v1/history", ...) with this
-#
 @app.route("/v1/history", methods=["POST"])
 def get_history():
-    """Get comprehensive conversation history, translated to the user's language."""
+    """Get comprehensive conversation history with analytics"""
     try:
         update_system_state('get_history')
         data = request.get_json()
@@ -2721,9 +2489,7 @@ def get_history():
 
         user_id_str = data.get("userId", "")
         limit = min(data.get("limit", 50), 100)
-        
-        # --- NEW: Get the user's current language ---
-        user_lang = data.get("language", "en")
+        include_analysis = data.get("includeAnalysis", False)
 
         if not user_id_str:
             return jsonify({"error": "User ID is required"}), 400
@@ -2732,73 +2498,44 @@ def get_history():
         if not current_user:
             return jsonify({"error": "User not found"}), 401
 
+        # Get conversation turns with ordering
         turns = ConversationTurn.query.filter_by(user_id=current_user.id)\
                 .order_by(ConversationTurn.timestamp.asc())\
                 .limit(limit).all()
 
+        # Format conversation history
         chat_log = []
-        
-        # --- NEW: Collect all text to be translated ---
-        texts_to_translate = []
-        if user_lang != "en":
-            for turn in turns:
-                texts_to_translate.append(turn.user_message)
-                try:
-                    bot_response_json = json.loads(turn.bot_response)
-                    texts_to_translate.append(bot_response_json.get("response", ""))
-                except:
-                    texts_to_translate.append(turn.bot_response) # Fallback if not JSON
-        
-        # --- NEW: Translate all text in one batch ---
-        translated_texts = {} # A map of {english: hindi}
-        if texts_to_translate:
-            # Create a list of Bhashini-compatible inputs
-            nmt_input_list = [{"source": text} for text in texts_to_translate if text]
-            if nmt_input_list:
-                nmt_out_input = {"input": nmt_input_list}
-                nmt_out_result = call_bhashini_pipeline(["translation"], nmt_out_input, source_lang="en", target_lang=user_lang)
-                
-                # Create the translation map
-                for i, output in enumerate(nmt_out_result["pipelineResponse"][0]["output"]):
-                    original_text = nmt_input_list[i]["source"]
-                    translated_texts[original_text] = output["target"]
-            logger.info(f"Translated {len(translated_texts)} history items to {user_lang}")
-
-        # --- NEW: Build the chat log using the translated map ---
         for turn in turns:
-            user_message = turn.user_message
-            bot_response_str = turn.bot_response
-
-            if user_lang != "en":
-                user_message = translated_texts.get(user_message, user_message)
-                try:
-                    bot_response_json = json.loads(bot_response_str)
-                    bot_text = bot_response_json.get("response", "")
-                    translated_bot_text = translated_texts.get(bot_text, bot_text)
-                    bot_response_json["response"] = translated_bot_text # Overwrite the text
-                    bot_response_str = json.dumps(bot_response_json) # Re-serialize
-                except:
-                    bot_response_str = translated_texts.get(bot_response_str, bot_response_str)
-
             # User message
             user_entry = {
                 "role": "user",
-                "content": user_message,
+                "content": turn.user_message,
                 "timestamp": turn.timestamp.isoformat(),
                 "turn_id": turn.id
             }
 
-            # Assistant response
+            # Assistant response with optional analysis
             assistant_entry = {
                 "role": "assistant",
-                "content": bot_response_str, # This is now translated
+                "content": turn.bot_response,
                 "timestamp": turn.timestamp.isoformat(),
                 "turn_id": turn.id
             }
 
+            if include_analysis:
+                assistant_entry["analysis"] = {
+                    "intent": turn.detected_intent,
+                    "confidence": turn.intent_confidence,
+                    "language": turn.language_detected,
+                    "urgency": turn.urgency_level,
+                    "action": turn.action_triggered,
+                    "action_parameters": turn.get_action_parameters(),
+                    "context_entities": turn.get_context_entities()
+                }
+
             chat_log.extend([user_entry, assistant_entry])
-        
-        # (The rest of your function is the same)
+
+        # Get user progress summary
         if hasattr(initialize_ai_components, '_conversation_memory'):
             user_summary = initialize_ai_components._conversation_memory.get_user_summary(user_id_str)
             conversation_stage = initialize_ai_components._conversation_memory.get_conversation_stage_db(current_user.patient_id)
@@ -2816,17 +2553,24 @@ def get_history():
                 "improvement_trend": getattr(current_user, 'improvement_trend', 'stable'),
                 "member_since": current_user.created_at.isoformat(),
                 "last_interaction": current_user.last_login.isoformat() if current_user.last_login else None
-                # ... (rest of your summary) ...
             }
         }
 
-        logger.info(f"✅ History retrieved and translated for {user_id_str}: {len(turns)} turns")
+        # Add detailed progress if available
+        if user_summary.get('exists'):
+            response_data["progress_analytics"] = user_summary.get('progress_metrics', {})
+            response_data["method_analytics"] = user_summary.get('method_effectiveness', {})
+            response_data["risk_assessment"] = user_summary.get('risk_assessment', {})
+
+        logger.info(f"✅ History retrieved for {user_id_str}: {len(turns)} turns")
+
         return jsonify(response_data)
 
     except Exception as e:
         logger.error(f"❌ History retrieval error: {e}")
         logger.error(traceback.format_exc())
         update_system_state('get_history', success=False)
+
         return jsonify({
             "error": "Failed to retrieve conversation history",
             "message": "Please try again later"
@@ -3090,7 +2834,202 @@ def get_user_profile(user_id):
             "status": "error"
         }), 500
     
+# Find the trigger_sos function and replace it entirely with this updated version:
+@app.route("/v1/sos-trigger", methods=["POST"])
+def trigger_sos():
+    data = request.get_json() or {}
+    user_id = data.get("userId")
+    location = data.get("location")
+    message = data.get("message")
 
+    user = User.query.filter_by(patient_id=user_id).first()
+    if not user:
+        return jsonify({"success": False, "error": "User not found"}), 404
+
+    event_id = str(uuid.uuid4())
+    sos_events[event_id] = {
+        "id": len(sos_events) + 1,
+        "event_id": event_id,
+        "patient_name": user.full_name,
+        "patient_id": user.patient_id,
+        "location": location,
+        "message": message,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "status": "pending",
+        "emergency_type": "medical_emergency"
+    }
+
+    logger.info(f"SOS Triggered by {user.full_name} ({user_id})")
+
+    # --- START: NEW PUSH NOTIFICATION LOGIC WITH LOCATION FILTERING ---
+    try:
+        # Get all saathi users
+        saathi_users = User.query.filter_by(role='saathi').all()
+        if not saathi_users:
+            logger.warning("SOS triggered, but no users with the 'saathi' role were found to notify.")
+            return jsonify({"success": True, "message": "SOS event created, but no Saathis found."})
+
+        # Filter saathi within 2km radius if patient location is available
+        patient_lat = location.get('latitude') if location else None
+        patient_lng = location.get('longitude') if location else None
+
+        if patient_lat and patient_lng:
+            nearby_saathi = []
+            for saathi in saathi_users:
+                if saathi.latitude and saathi.longitude:
+                    distance = calculate_distance(saathi.latitude, saathi.longitude, patient_lat, patient_lng)
+                    if distance <= 2.0:  # 2km radius
+                        nearby_saathi.append(saathi)
+            saathi_users = nearby_saathi
+            logger.info(f"Filtered to {len(saathi_users)} saathi within 2km radius")
+        else:
+            logger.warning("Patient location not available, notifying all saathi")
+
+        if not saathi_users:
+            logger.warning("No saathi found within 2km radius")
+            return jsonify({"success": True, "message": "SOS event created, but no nearby Saathis found."})
+
+        saathi_user_ids = [user.id for user in saathi_users]
+
+        subscriptions = PushSubscription.query.filter(PushSubscription.user_id.in_(saathi_user_ids)).all()
+        if not subscriptions:
+            logger.warning(f"Found {len(saathi_users)} nearby Saathis, but none have active push subscriptions.")
+
+
+        push_payload = json.dumps({
+            "title": "🚨 EMERGENCY ALERT 🚨",
+            "options": {
+                "body": f"SOS from {user.full_name}. Needs immediate assistance!",
+                "icon": "https://i.ibb.co/YDNmS1D/siren.png", # A different icon for SOS
+                "data": {
+                    "type": "sos", # IMPORTANT: We add a type to identify this notification
+                    "url": "/saathi.html#notificationsScreen"
+                },
+                "tag": f"sos-alert-{event_id}"
+            }
+        })
+
+        for sub in subscriptions:
+            try:
+                webpush(
+                    subscription_info=json.loads(sub.subscription_info),
+                    data=push_payload,
+                    vapid_private_key=VAPID_PRIVATE_KEY,
+                    vapid_claims={"sub": "mailto:" + VAPID_CLAIM_EMAIL}
+                )
+                logger.info(f"Sent SOS push notification for event {event_id} to a nearby Saathi device.")
+            except WebPushException as ex:
+                logger.error(f"Failed to send SOS push notification: {ex}")
+                # If a subscription is expired, delete it from the DB
+                if ex.response and ex.response.status_code in [404, 410]:
+                    db.session.delete(sub)
+                    db.session.commit()
+                    logger.info("Deleted an expired push subscription.")
+    except Exception as e:
+        logger.error(f"An error occurred during SOS push notification dispatch: {e}")
+    # --- END: NEW PUSH NOTIFICATION LOGIC ---
+
+    return jsonify({"success": True, "message": "SOS event created.", "event_id": event_id})
+
+@app.route("/v1/sos-events", methods=["GET"])
+def get_sos_events():
+    # Get current saathi user
+    current_user = get_current_user()
+    if not current_user or current_user.role != 'saathi':
+        return jsonify({"success": False, "message": "Saathi authentication required"}), 401
+
+    # Get saathi location
+    saathi_lat = current_user.latitude
+    saathi_lng = current_user.longitude
+
+    if not saathi_lat or not saathi_lng:
+        # If saathi has no location, return all events (fallback)
+        pending_events = [e for e in sos_events.values() if e['status'] == 'pending']
+        other_events = [e for e in sos_events.values() if e['status'] != 'pending']
+        all_sorted = sorted(pending_events, key=lambda x: x['timestamp'], reverse=True) + sorted(other_events, key=lambda x: x['timestamp'], reverse=True)
+        return jsonify({"success": True, "sos_events": all_sorted})
+
+    # Filter events within 2km radius and add patient details
+    filtered_events = []
+    for event in sos_events.values():
+        if event['status'] == 'pending':
+            patient_location = event.get('location', {})
+            if patient_location and 'latitude' in patient_location and 'longitude' in patient_location:
+                patient_lat = patient_location['latitude']
+                patient_lng = patient_location['longitude']
+
+                # Calculate distance using Haversine formula
+                distance = calculate_distance(saathi_lat, saathi_lng, patient_lat, patient_lng)
+                if distance <= 2.0:  # 2km radius
+                    # Get patient details from database
+                    patient = User.query.filter_by(patient_id=event['patient_id']).first()
+                    if patient:
+                        # Add patient details to the event
+                        phone_number = patient.phone_number if patient.phone_number else 'Phone not available'
+                        enhanced_event = event.copy()
+                        enhanced_event['patient_details'] = {
+                            'full_address': patient.get_full_address(),
+                            'phone_number': phone_number,
+                            'email': patient.email
+                        }
+                        enhanced_event['distance_km'] = round(distance, 2)
+                        filtered_events.append(enhanced_event)
+                    else:
+                        # If patient not found in DB, still include the event
+                        enhanced_event = event.copy()
+                        enhanced_event['patient_details'] = {
+                            'full_address': 'Address not available',
+                            'phone_number': 'Phone not available',
+                            'email': 'Email not available'
+                        }
+                        enhanced_event['distance_km'] = round(distance, 2)
+                        filtered_events.append(enhanced_event)
+
+    # Sort by timestamp (most recent first)
+    filtered_events.sort(key=lambda x: x['timestamp'], reverse=True)
+
+    return jsonify({"success": True, "sos_events": filtered_events})
+
+@app.route("/v1/sos-respond", methods=["POST"])
+def respond_to_sos():
+    data = request.get_json() or {}
+    event_id = data.get("event_id")
+    saathi_id = data.get("saathi_user_id") # You'd need a Saathi model for this
+
+    if event_id in sos_events:
+        sos_events[event_id]['status'] = 'responded'
+        logger.info(f"Saathi {saathi_id} responded to SOS event {event_id}")
+        return jsonify({"success": True, "message": "Response logged."})
+
+    return jsonify({"success": False, "error": "Event not found"}), 404
+
+@app.route("/v1/saathi/update-location", methods=["POST"])
+def update_saathi_location():
+    """Update saathi location for SOS notifications"""
+    try:
+        current_user = get_current_user()
+        if not current_user or current_user.role != 'saathi':
+            return jsonify({"success": False, "message": "Saathi authentication required"}), 401
+
+        data = request.get_json() or {}
+        latitude = data.get("latitude")
+        longitude = data.get("longitude")
+
+        if latitude is None or longitude is None:
+            return jsonify({"success": False, "message": "Latitude and longitude are required"}), 400
+
+        # Update saathi location in database
+        current_user.latitude = float(latitude)
+        current_user.longitude = float(longitude)
+        db.session.commit()
+
+        logger.info(f"Updated location for saathi {current_user.patient_id}: {latitude}, {longitude}")
+        return jsonify({"success": True, "message": "Location updated successfully"})
+
+    except Exception as e:
+        logger.error(f"Error updating saathi location: {e}")
+        db.session.rollback()
+        return jsonify({"success": False, "message": "Failed to update location"}), 500
 
 @app.route('/v1/user/<user_id>/preferences', methods=['POST'])
 def update_user_preferences(user_id):
@@ -3866,227 +3805,6 @@ def get_doctor_profile():
         logger.error(f"Error fetching doctor profile: {e}", exc_info=True)
         return jsonify({"error": "Failed to load doctor profile"}), 500
 
-def send_push_notification(user_id: int, payload: Dict[str, Any]):
-    """
-    Finds all push subscriptions for a given user_id (the database PK)
-    and sends them a push notification with the given payload.
-    """
-    try:
-        # Find all subscriptions for this user
-        subscriptions = PushSubscription.query.filter_by(user_id=user_id).all()
-        
-        if not subscriptions:
-            logger.info(f"No push subscriptions found for user {user_id}.")
-            return
-
-        logger.info(f"Sending push notification to {len(subscriptions)} subscription(s) for user {user_id}...")
-        
-        payload_json = json.dumps(payload)
-
-        for sub in subscriptions:
-            try:
-                # Re-create the subscription_info dict from stored data
-                subscription_info = {
-                    "endpoint": sub.endpoint,
-                    "keys": {
-                        "p256dh": sub.p256dh,
-                        "auth": sub.auth
-                    }
-                }
-                
-                webpush(
-                    subscription_info=subscription_info,
-                    data=payload_json,
-                    vapid_private_key=VAPID_PRIVATE_KEY,
-                    vapid_claims={"sub": "mailto:" + VAPID_CLAIM_EMAIL} # <-- USES YOUR EXISTING VARIABLE
-                )
-            except WebPushException as ex:
-                logger.error(f"Error sending push notification to {sub.endpoint}: {ex}")
-                if ex.response and ex.response.status_code:
-                    if ex.response.status_code == 410 or ex.response.status_code == 404:
-                        logger.warning(f"Subscription {sub.id} is invalid. Deleting.")
-                        db.session.delete(sub)
-                    else:
-                        logger.error(f"Push notification failed with status code: {ex.response.status_code}")
-                else:
-                    logger.error(f"Push notification failed: {ex}")
-            except Exception as e:
-                logger.error(f"General error in webpush loop for sub {sub.id}: {e}", exc_info=True)
-
-        db.session.commit() # Commit any deletions of old subscriptions
-        logger.info(f"Push notifications sent for user {user_id}.")
-        
-    except Exception as e:
-        logger.error(f"FATAL: Error in send_push_notification function for user {user_id}: {e}", exc_info=True)
-        db.session.rollback()
-# --- SOS Feature ---
-def _haversine_distance(lat1, lon1, lat2, lon2):
-    """Calculate distance between two lat/lon points in km."""
-    R = 6371  # Radius of Earth in km
-    
-    phi1 = math.radians(lat1)
-    phi2 = math.radians(lat2)
-    delta_phi = math.radians(lat2 - lat1)
-    delta_lambda = math.radians(lon2 - lon1)
-    
-    a = math.sin(delta_phi / 2.0) ** 2 + \
-        math.cos(phi1) * math.cos(phi2) * \
-        math.sin(delta_lambda / 2.0) ** 2
-    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-    
-    distance = R * c
-    return distance
-
-@app.route("/v1/sos-trigger", methods=['POST'])
-def sos_trigger():
-    """
-    Endpoint for a PATIENT to trigger an SOS alert.
-    MODIFIED to use get_current_user()
-    """
-    current_user = get_current_user() # <-- USES YOUR FUNCTION
-    if not current_user:
-        return jsonify({"success": False, "message": "Authentication required"}), 401
-        
-    try:
-        if current_user.role != 'patient':
-            return jsonify({"success": False, "message": "Only patients can trigger an SOS."}), 403
-
-        data = request.get_json()
-        patient_location = data.get('location') # Expected format: {'latitude': 12.34, 'longitude': 56.78}
-        
-        if not patient_location or 'latitude' not in patient_location or 'longitude' not in patient_location:
-            return jsonify({"success": False, "message": "Valid location is required."}), 400
-
-        # Find nearby Saathis (within 5km)
-        nearby_saathis = []
-        all_saathis = User.query.filter_by(role='saathi', is_active=True).all()
-        
-        for saathi in all_saathis:
-            if saathi.current_location: 
-                try:
-                    saathi_loc = json.loads(saathi.current_location)
-                    if 'latitude' in saathi_loc and 'longitude' in saathi_loc:
-                        distance = _haversine_distance(
-                            patient_location['latitude'], patient_location['longitude'],
-                            saathi_loc['latitude'], saathi_loc['longitude']
-                        )
-                        if distance <= 5: # 5 km radius
-                            nearby_saathis.append(saathi)
-                except Exception as e:
-                    logger.error(f"Error processing Saathi {saathi.id} location: {e}")
-
-        if not nearby_saathis:
-            return jsonify({"success": False, "message": "No nearby Saathis found. Alerting central services."}), 404
-
-        event_id = str(uuid.uuid4())
-        sos_event = {
-            "event_id": event_id,
-            "patient_id": current_user.patient_id,
-            "patient_name": current_user.full_name,
-            "patient_location": patient_location,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "status": "pending", 
-            "notified_saathis": [s.patient_id for s in nearby_saathis],
-            "accepted_by": None
-        }
-        sos_events[event_id] = sos_event
-        
-        notification_payload = {
-            "title": "SOS Alert!",
-            "body": f"SOS from {current_user.full_name}. Needs immediate assistance!",
-            "icon": "https://i.ibb.co/YDNmS1D/siren.png", 
-            "data": {
-                "url": "/saathi-dashboard/sos", 
-                "event_id": event_id
-            }
-        }
-        
-        for saathi in nearby_saathis:
-            # USES THE NEW HELPER FUNCTION
-            send_push_notification(saathi.id, notification_payload) # We use saathi.id (PK)
-
-        return jsonify({"success": True, "message": "SOS triggered. Notifying nearby Saathis.", "event_id": event_id}), 200
-
-    except Exception as e:
-        logger.error(f"❌ Error in sos_trigger: {e}", exc_info=True)
-        return jsonify({"success": False, "message": "An internal error occurred."}), 500
-
-@app.route("/v1/sos-events", methods=['GET'])
-def get_sos_events():
-    """
-    Endpoint for a SAATHI to fetch pending SOS events.
-    MODIFIED to use get_current_user()
-    """
-    current_user = get_current_user() # <-- USES YOUR FUNCTION
-    if not current_user:
-        return jsonify({"success": False, "message": "Authentication required"}), 401
-        
-    if current_user.role != 'saathi':
-        return jsonify({"success": False, "message": "Only Saathis can view SOS events."}), 403
-    
-    saathi_id = current_user.patient_id
-    pending_events = []
-    
-    for event_id, event in list(sos_events.items()):
-        event_time = datetime.fromisoformat(event['timestamp'])
-        if datetime.now(timezone.utc) - event_time > timedelta(hours=1):
-            sos_events.pop(event_id, None)
-            continue
-
-        if event['status'] == 'pending' and saathi_id in event['notified_saathis']:
-            pending_events.append(event)
-    
-    pending_events.sort(key=lambda x: x['timestamp'], reverse=True)
-    
-    return jsonify({"success": True, "sos_events": pending_events})
-
-@app.route("/v1/sos-respond", methods=['POST'])
-def sos_respond():
-    """
-    Endpoint for a SAATHI to accept an SOS event.
-    MODIFIED to use get_current_user()
-    """
-    current_user = get_current_user() # <-- USES YOUR FUNCTION
-    if not current_user:
-        return jsonify({"success": False, "message": "Authentication required"}), 401
-        
-    if current_user.role != 'saathi':
-        return jsonify({"success": False, "message": "Only Saathis can respond to SOS."}), 403
-
-    data = request.get_json()
-    event_id = data.get('event_id')
-    
-    if not event_id or event_id not in sos_events:
-        return jsonify({"success": False, "message": "Invalid or expired SOS event ID."}), 404
-
-    event = sos_events[event_id]
-
-    if event['status'] != 'pending':
-        return jsonify({"success": False, "message": f"SOS already {event['status']} by {event.get('accepted_by_name', 'another Saathi')}."}), 409
-
-    event['status'] = 'accepted'
-    event['accepted_by'] = current_user.patient_id
-    event['accepted_by_name'] = current_user.full_name
-    sos_events[event_id] = event 
-    
-    # Notify the PATIENT that help is on the way
-    patient_user = User.query.filter_by(patient_id=event['patient_id']).first()
-    if patient_user:
-        patient_notification = {
-            "title": "Help is on the way!",
-            "body": f"Saathi {current_user.full_name} has accepted your SOS and is en route.",
-            "icon": "https://i.ibb.co/2W6nQYv/saathi-icon.png",
-            "data": {
-                "url": "/sos-status",
-                "event_id": event_id,
-                "saathi_name": current_user.full_name
-            }
-        }
-        # USES THE NEW HELPER FUNCTION
-        send_push_notification(patient_user.id, patient_notification) # We use patient_user.id (PK)
-    
-    return jsonify({"success": True, "message": "SOS event accepted. Patient has been notified."})
-# --- END SOS Feature ---
 
 @app.route("/v1/agora/token", methods=["POST"])
 def get_agora_token():
@@ -4318,4 +4036,3 @@ if __name__ == "__main__":
     # Start the Flask application
 
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=False)
-
