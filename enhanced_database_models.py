@@ -38,6 +38,9 @@ class User(db.Model):
     is_active = db.Column(db.Boolean, default=True)
     email_verified = db.Column(db.Boolean, default=False)
     phone_verified = db.Column(db.Boolean, default=False)
+    # Location information for saathi (for SOS notifications)
+    latitude = db.Column(db.Float, nullable=True)
+    longitude = db.Column(db.Float, nullable=True)
     
     # App usage tracking
     total_conversations = db.Column(db.Integer, default=0)
@@ -51,10 +54,6 @@ class User(db.Model):
     # Enhanced fields
     timezone = db.Column(db.String(50), default='Asia/Kolkata')
     notification_preferences = db.Column(db.Text)  # JSON object for notification settings
-
-    # Location information for saathi (for SOS notifications)
-    latitude = db.Column(db.Float, nullable=True)
-    longitude = db.Column(db.Float, nullable=True)
 
     # Conversation state tracking
     current_conversation_stage = db.Column(db.String(100), default='general')  # Track current conversation stage
@@ -996,6 +995,7 @@ def seed_initial_saathis():
             "password": "password123",
             "role": "saathi"
         }
+        # You can add more Saathi users here
     ]
 
     for saathi_data in saathis_to_add:
