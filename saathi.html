@@ -627,7 +627,7 @@ function generateNotificationsList() {
             </div>
             <div class="notification-actions">
                 ${notification.status === 'pending' ?
-                    `<button class="btn btn-primary call-btn" data-id="${notification.id}">📞 Call</button>
+                    `<button class="btn btn-primary call-patient-btn" data-id="${notification.id}" data-phone="${notification.patient_details?.phone_number || ''}">📞 Call Patient</button>
                      <button class="btn btn-primary track-btn" data-id="${notification.id}" style="margin-left: 0.5rem;">📍 Track Location</button>
                      <button class="btn dismiss-btn" data-id="${notification.id}" style="margin-left: 0.5rem;">Dismiss</button>` :
                     '<span class="status-resolved">Resolved</span>'
@@ -636,8 +636,8 @@ function generateNotificationsList() {
         </div>
     `).join('');
 
-    container.querySelectorAll('.call-btn').forEach(btn => {
-        btn.addEventListener('click', (e) => callPatient(e.target.dataset.id));
+    container.querySelectorAll('.call-patient-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => callPatient(e.target.dataset.id, e.target.dataset.phone));
     });
     container.querySelectorAll('.track-btn').forEach(btn => {
         btn.addEventListener('click', (e) => trackPatientLocation(e.target.dataset.id));
@@ -647,15 +647,19 @@ function generateNotificationsList() {
     });
 }
 
-async function callPatient(notificationId) {
-    const notification = appData.notifications.find(n => n.id == notificationId);
-    if (!notification || !notification.patient_details || !notification.patient_details.phone_number) {
-        showConfirmationModal('Error', 'Patient phone number not available.');
+async function callPatient(notificationId, phoneNumber) {
+    if (!phoneNumber || phoneNumber === 'Not available') {
+        showConfirmationModal('Error', 'Patient phone number is not available.');
         return;
     }
 
-    const phoneNumber = notification.patient_details.phone_number;
-    window.location.href = `tel:${phoneNumber}`;
+    // For mobile devices, initiate a call
+    if (/Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent)) {
+        window.location.href = `tel:${phoneNumber}`;
+    } else {
+        // For desktop, show the number and suggest calling
+        showConfirmationModal('Call Patient', `Please call the patient at: ${phoneNumber}`);
+    }
 }
 
 async function dismissNotification(notificationId) {
