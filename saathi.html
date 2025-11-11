@@ -348,7 +348,7 @@
 </div>
 
     <script>
-        const API_BASE_URL = '';
+        const API_BASE_URL = '/api';
         document.addEventListener('DOMContentLoaded', function() {
             let saathi = null;
             let currentLanguage = 'en';
@@ -627,7 +627,7 @@ function generateNotificationsList() {
             </div>
             <div class="notification-actions">
                 ${notification.status === 'pending' ?
-                    `<button class="btn btn-primary respond-btn" data-id="${notification.id}">Respond</button>
+                    `<button class="btn btn-primary call-btn" data-id="${notification.id}">📞 Call</button>
                      <button class="btn btn-primary track-btn" data-id="${notification.id}" style="margin-left: 0.5rem;">📍 Track Location</button>
                      <button class="btn dismiss-btn" data-id="${notification.id}" style="margin-left: 0.5rem;">Dismiss</button>` :
                     '<span class="status-resolved">Resolved</span>'
@@ -636,8 +636,8 @@ function generateNotificationsList() {
         </div>
     `).join('');
 
-    container.querySelectorAll('.respond-btn').forEach(btn => {
-        btn.addEventListener('click', (e) => respondToNotification(e.target.dataset.id));
+    container.querySelectorAll('.call-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => callPatient(e.target.dataset.id));
     });
     container.querySelectorAll('.track-btn').forEach(btn => {
         btn.addEventListener('click', (e) => trackPatientLocation(e.target.dataset.id));
@@ -647,38 +647,15 @@ function generateNotificationsList() {
     });
 }
 
-async function respondToNotification(notificationId) {
-    try {
-        const notification = appData.notifications.find(n => n.id == notificationId);
-        if (!notification || !notification.event_id) {
-            showConfirmationModal('Error', 'Invalid notification data.');
-            return;
-        }
-
-        // NOTE: This endpoint does not exist in your backend yet.
-        const response = await fetch(`${API_BASE_URL}/v1/sos-respond`, { 
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                event_id: notification.event_id,
-                saathi_user_id: saathi ? saathi.patientId : null,
-                response_notes: 'Saathi responded to emergency alert'
-            })
-        });
-
-        if (response.ok) {
-            notification.status = 'responded';
-            updateEmergencyCount();
-            generateNotificationsList();
-            showConfirmationModal('Response Sent', 'You have responded to this emergency alert. Contact the patient directly.');
-        } else {
-            const errorData = await response.json();
-            showConfirmationModal('Error', errorData.error || 'Failed to send response.');
-        }
-    } catch (error) {
-        console.error('Failed to respond to notification:', error);
-        showConfirmationModal('Error', 'Failed to send response. Please try again.');
+async function callPatient(notificationId) {
+    const notification = appData.notifications.find(n => n.id == notificationId);
+    if (!notification || !notification.patient_details || !notification.patient_details.phone_number) {
+        showConfirmationModal('Error', 'Patient phone number not available.');
+        return;
     }
+
+    const phoneNumber = notification.patient_details.phone_number;
+    window.location.href = `tel:${phoneNumber}`;
 }
 
 async function dismissNotification(notificationId) {
@@ -811,4 +788,5 @@ async function initializeApp() {
         });
     </script>
 </body>
+
 </html>
